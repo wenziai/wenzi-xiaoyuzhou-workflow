@@ -1,0 +1,4 @@
+interface:
+  display_name: "逐字稿自媒体内容生成器"
+  short_description: "把逐字稿匹配到个人定位、能力与观点，再生成定制内容"
+  default_prompt: "使用 $wenzi-xiaoyuzhou-content。先检查我是否已有确认过的账号定位；有则直接复用，没有再帮我建立。然后从逐字稿中筛选 3–5 个候选选题，先不要写正文。"
