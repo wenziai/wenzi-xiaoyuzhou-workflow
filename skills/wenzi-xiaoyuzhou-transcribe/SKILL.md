@@ -6,7 +6,7 @@ description: >
 metadata:
   category: "media"
   triggers: "[\"用户发送小宇宙/播客链接\", \"帮我转录这个播客\", \"下载播客\", \"批量转录播客\"]"
-  version: "1.4.0"
+  version: "1.5.0"
   tags: "[\"media\", \"audio\", \"podcast\", \"transcription\", \"xiaoyuzhou\"]"
 ---
 
@@ -26,13 +26,13 @@ metadata:
 
 不要默认展示命令、模型参数、音频大小、分段数量、处理耗时、中间文件、核验稿路径或逐步修改过程。用户主动询问过程、诊断或原始时间戳时再提供。
 
-默认在本地使用 `faster-whisper` 的快速档，先得到可检索、可选题的完整逐字稿。Atlas Cloud、MuAPI 是用户明确选择后才启用的 **experimental** 云端后端；音频会发送至第三方服务并可能计费，本版本尚未完成真实付费服务验收。
+默认在本地使用 `faster-whisper` 的快速档。不要仅因其他项目采用不同引擎就直接替换；先用同一台机器、同一段音频做基准测试。本 Skill 会复用内容与配置完全一致的已有逐字稿；RSS 批量转录时只加载一次本地模型，避免每集重复启动。Atlas Cloud、MuAPI 是用户明确选择后才启用的 **experimental** 云端后端；音频会发送至第三方服务并可能计费，本版本尚未完成真实付费服务验收。
 
 ## 低 Token、高准确率工作流（默认）
 
 完整转录不等于把全文反复加载进模型上下文。默认把音频处理、文本机械整理和语义校对分层完成：
 
-1. 本地转录生成唯一核验稿，保留全部带时间戳片段。
+1. 本地转录生成唯一带时间戳核验稿；相同音频与相同配置已有结果时直接复用，不重复转录。
 2. 优先从节目页元数据取得标题、播客名、主播、简介和时间轴；这些信息用于确定章节和校正专名。
 3. 使用 `scripts/prepare_readable.py` 在本地完成去时间戳、繁转简、自然段合并、章节插入及确定性词表替换。不要为了排版把完整核验稿输出到模型上下文，也不要为每期临时重写同类整理脚本。
 4. 模型只读取：开头与结尾、各章节边界附近、专名命中行、低置信或明显异常的片段，以及最终稿的结构检查结果。搜索疑似错词时优先用 `rg` 定位；不要整篇打印。
@@ -50,7 +50,7 @@ metadata:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install faster-whisper
+python3 -m pip install -r requirements.txt
 # macOS: brew install ffmpeg
 # Ubuntu: sudo apt install ffmpeg
 ```
@@ -88,7 +88,7 @@ python3 scripts/prepare_readable.py ./output/episode-hash.md ./output/readable.m
 | `balanced` | `small` | 选题确定后，需要更稳的正文理解或少量引用 |
 | `accurate` | `small`，更完整解码 | 重点段落复核；仍不能代替对原音频的事实核验 |
 
-`--model` 可以覆盖档位的默认模型，但仍保留该档位的解码策略。除非用户明确需要更高精度，不要一开始就用高成本档位把整期做满。逐字稿完成后先交付或报告路径；内容分析和社媒创作由后续 Skill 分阶段处理。
+`--model` 可以覆盖档位的默认模型，但仍保留该档位的解码策略。除非用户明确需要更高精度，不要一开始就用高成本档位把整期做满。批量转录在同一进程中复用模型；相同音频、模型、语言与档位生成的已有逐字稿会直接复用。逐字稿完成后先交付或报告路径；内容分析和社媒创作由后续 Skill 分阶段处理。
 
 自动下载仅接受公网 HTTP(S) 直连地址，禁用代理和重定向，拒绝本地/私网地址。需要跳转或代理的来源，请先自行下载音频，再传入本地文件路径。
 
@@ -169,6 +169,8 @@ MuAPI 音频必须小于 25 MiB，超限在上传前拒绝。Atlas 对不支持�
 
 - [SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper)
 - [OpenAI Whisper](https://github.com/openai/whisper)
+
+批处理的常驻模型思路参考了 MIT 许可的 [chubbyguan/chubbyskills](https://github.com/chubbyguan/chubbyskills/tree/main/podcast-transcribe)。在当前设备的同段音频基准中，既有 `faster-whisper base` 明显快于其 SenseVoice 默认方案，因此保留已验证的本地引擎，只借鉴可确认有效的流程优化。
 
 ## 合规声明
 

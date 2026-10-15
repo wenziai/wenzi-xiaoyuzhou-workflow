@@ -118,13 +118,33 @@ def _settings():
 def transcribe_episode(audio_path: str, output_dir: str, ep: dict, *, provider=None,
                        model=None, language=None, base_url=None, state_dir=None,
                        cloud_timeout=1800, poll_interval=3, resubmit=False,
-                       preset=None) -> str | None:
+                       preset=None, local_model=None) -> str | None:
     """Run the chosen provider and use its actual output path, never a guessed cache."""
     from pathlib import Path
     settings = _settings()
     config = settings.resolve_provider_config(provider, model, language, base_url, state_dir, preset)
     settings.positive_seconds(cloud_timeout, "cloud-timeout")
     settings.positive_seconds(poll_interval, "poll-interval", maximum=60)
+    if config["provider"] == "local":
+        runner = _sibling("transcribe")
+        title = ep.get("title") or os.path.splitext(os.path.basename(audio_path))[0]
+        cached = runner.cached_output_path(output_dir, title, audio_path, config)
+        if cached:
+            print("  已复用现有逐字稿")
+            return cached
+        output_path = runner._output_path(output_dir, title, audio_path, config)
+        try:
+            runner.transcribe_audio(
+                audio_path, output_path, title, ep.get("audio_url", ""),
+                provider=config["provider"], model_name=config["model"],
+                language=config["language"], preset=config["preset"],
+                local_model=local_model,
+            )
+        except (RuntimeError, ValueError, OSError):
+            print("  转录失败，请用单集命令查看错误", file=sys.stderr)
+            return None
+        print("  转录完成")
+        return output_path
     script = Path(__file__).with_name("transcribe.py")
     command = [sys.executable, str(script), audio_path, output_dir,
                "--provider", config["provider"], "--model", config["model"],
@@ -209,6 +229,10 @@ def main(argv=None):
 
     # Transcribe
     if not args.download_only:
+        local_model = None
+        if config["provider"] == "local":
+            print("一次加载本地模型，供本批次重复使用…")
+            local_model = _sibling("transcribe").load_local_model(config["model"])
         for ep in batch_eps:
             if not args.transcribe_only and not downloaded.get(ep['num']):
                 continue
@@ -232,7 +256,7 @@ def main(argv=None):
                 fpath, args.output, ep, provider=config["provider"], model=config["model"],
                 language=config["language"], base_url=config["base_url"], state_dir=config["state_dir"],
                 cloud_timeout=args.cloud_timeout, poll_interval=args.poll_interval, resubmit=args.resubmit,
-                preset=config["preset"],
+                preset=config["preset"], local_model=local_model,
             ):
                 failures += 1
 

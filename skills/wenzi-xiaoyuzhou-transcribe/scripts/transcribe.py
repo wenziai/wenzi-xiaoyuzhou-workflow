@@ -14,6 +14,7 @@ import time
 import subprocess
 import tempfile
 import re
+import json
 from datetime import datetime
 
 
@@ -118,7 +119,7 @@ def _sibling(name):
 def transcribe_audio(audio_path: str, output_path: str, title: str, source: str = "",
                      provider: str = "local", language: str = "zh", model_name=None,
                      base_url=None, state_dir=None, cloud_timeout=1800,
-                     poll_interval=3, resubmit=False, preset=None):
+                     poll_interval=3, resubmit=False, preset=None, local_model=None):
     """Transcribe through one provider and create a new Markdown file exclusively.
 
     Cloud result caching precedes export, so a failed write can be retried without
@@ -134,15 +135,15 @@ def transcribe_audio(audio_path: str, output_path: str, title: str, source: str 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     start = time.monotonic()
     if config["provider"] == "local":
-        from faster_whisper import WhisperModel
-        print("Loading local faster-whisper model...", file=sys.stderr)
-        model = WhisperModel(config["model"], device="cpu", compute_type="int8")
+        if local_model is None:
+            print("Loading local faster-whisper model...", file=sys.stderr)
+            local_model = load_local_model(config["model"])
         decoding = {
             "fast": {"beam_size": 1, "condition_on_previous_text": False},
             "balanced": {"beam_size": 3, "condition_on_previous_text": True},
             "accurate": {"beam_size": 5, "condition_on_previous_text": True},
         }[config["preset"]]
-        segments, _info = model.transcribe(
+        segments, _info = local_model.transcribe(
             audio_path, language=config["language"] or None,
             vad_filter=True, **decoding,
         )
@@ -202,7 +203,13 @@ transcription_preset: {scalar(config['preset'])}
     return elapsed, segment_count
 
 
-def _output_path(output_dir, title, audio_path, config):
+def load_local_model(model_name: str):
+    """Load one local model so batch callers can reuse it across episodes."""
+    from faster_whisper import WhisperModel
+    return WhisperModel(model_name, device="cpu", compute_type="int8")
+
+
+def _artifact_base(output_dir, title, audio_path, config):
     import hashlib
     import json
     from pathlib import Path
@@ -212,7 +219,30 @@ def _output_path(output_dir, title, audio_path, config):
             digest.update(block)
     digest.update(json.dumps({key: config[key] for key in ("provider", "model", "language", "base_url", "preset")}, sort_keys=True).encode())
     safe_title = "".join(char for char in title if char.isalnum() or char in "-_ ").strip()[:50] or "episode"
-    base = Path(output_dir).expanduser().resolve() / f"{safe_title}-{digest.hexdigest()[:12]}"
+    return Path(output_dir).expanduser().resolve() / f"{safe_title}-{digest.hexdigest()[:12]}"
+
+
+def cached_output_path(output_dir, title, audio_path, config):
+    """Return a verified content-addressed result, or None when it must be created."""
+    candidate = _artifact_base(output_dir, title, audio_path, config).with_suffix(".md")
+    if candidate.is_file() and not candidate.is_symlink():
+        try:
+            head = candidate.read_text(encoding="utf-8")[:8192]
+        except (OSError, UnicodeError):
+            return None
+        markers = (
+            f"transcription_provider: {config['provider']}",
+            f"transcription_model: {json.dumps(config['model'], ensure_ascii=False)}",
+            f"transcription_preset: {json.dumps(config['preset'], ensure_ascii=False)}",
+            "\n> 转录引擎：",
+        )
+        if candidate.stat().st_size > 256 and all(marker in head for marker in markers):
+            return str(candidate)
+    return None
+
+
+def _output_path(output_dir, title, audio_path, config):
+    base = _artifact_base(output_dir, title, audio_path, config)
     candidate = base.with_suffix(".md")
     number = 2
     while candidate.exists() or candidate.is_symlink():
@@ -246,14 +276,19 @@ def main(argv=None):
                 if urlsplit(args.source).scheme not in ("http", "https"):
                     raise ValueError("Source must be an existing audio file or HTTP(S) URL")
                 audio_path, title = download_audio(args.source, temporary)
-            output_path = _output_path(args.output_dir, title, audio_path, config)
-            elapsed, count = transcribe_audio(
-                audio_path, output_path, title, args.source_url or args.source,
-                provider=config["provider"], model_name=config["model"], language=config["language"],
-                base_url=config["base_url"], state_dir=config["state_dir"],
-                cloud_timeout=args.cloud_timeout, poll_interval=args.poll_interval, resubmit=args.resubmit,
-                preset=config["preset"],
-            )
+            output_path = cached_output_path(args.output_dir, title, audio_path, config)
+            if output_path:
+                elapsed, count = 0.0, 0
+                print("Reusing matching transcript.", file=sys.stderr)
+            else:
+                output_path = _output_path(args.output_dir, title, audio_path, config)
+                elapsed, count = transcribe_audio(
+                    audio_path, output_path, title, args.source_url or args.source,
+                    provider=config["provider"], model_name=config["model"], language=config["language"],
+                    base_url=config["base_url"], state_dir=config["state_dir"],
+                    cloud_timeout=args.cloud_timeout, poll_interval=args.poll_interval, resubmit=args.resubmit,
+                    preset=config["preset"],
+                )
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
             if isinstance(exc, (RuntimeError, ValueError)):
                 print(f"Transcription failed: {exc}", file=sys.stderr)
